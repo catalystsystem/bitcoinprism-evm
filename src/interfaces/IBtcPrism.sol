@@ -6,7 +6,6 @@ error NoBlocksSubmitted();
 error BadParent();
 error NoParent();
 error HashAboveTarget();
-error DifficultyRetargetLT25(); // <25% difficulty retarget
 error WrongDifficultyBits();
 error OldDifficultyPeriod();
 error InsufficientTotalDifficulty();

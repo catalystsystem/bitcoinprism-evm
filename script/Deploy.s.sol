@@ -22,7 +22,8 @@ contract DeployBtcPrism is Script {
                 739000,
                 hex"00000000000000000001059a330a05e66e4fa2d1a5adcd56d1bfefc5c114195d",
                 1654182075,
-                0x96A200000000000000000000000000000000000000000,
+                hex"206a0917", // nBits of period 366
+                1653490985, // time of block 737856, first of period 366
                 false
             );
         } else {
@@ -31,7 +32,8 @@ contract DeployBtcPrism is Script {
                 2315360,
                 hex"0000000000000022201eee4f82ca053dfbc50d91e76e9cbff671699646d0982c",
                 1659901500,
-                0x000000000000003723C000000000000000000000000000000000000000000000,
+                hex"c0233719",
+                0, // unused: testnet difficulty is unchecked
                 true
             );
         }

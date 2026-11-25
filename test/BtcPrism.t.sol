@@ -102,7 +102,8 @@ contract BtcPrismTest is DSTest {
             717694, // start at block #717694, two  blocks before retarget
             0x0000000000000000000b3dd6d6062aa8b7eb99d033fe29e507e0a0d81b5eaeed,
             1641627092,
-            0x0000000000000000000B98AB0000000000000000000000000000000000000000,
+            hex"ab980b17", // nBits of period 355
+            1640422999, // time of block 715680, first of period 355
             false
         );
     }
@@ -181,5 +182,34 @@ contract BtcPrismTest is DSTest {
         prism.submit(717695, bytes.concat(headerGood, b717696, b717697));
         assertEq(prism.getLatestBlockHeight(), 717697);
         assertEq(vm.getRecordedLogs().length, 2);
+    }
+
+    function testGetNextBits() public {
+        BtcPrism prism = createBtcPrism();
+        // real retarget @717696
+        assertEq(bytes32(prism.getNextBits(hex"ab980b17", 1640422999, 1641627659)), bytes32(bytes4(hex"8b8c0b17")));
+        // real first difficulty change @32256
+        assertEq(bytes32(prism.getNextBits(hex"ffff001d", 1261130161, 1262152739)), bytes32(bytes4(hex"6ad8001d")));
+        // @2016: capped at powLimit, mantissa sign bit normalised
+        assertEq(bytes32(prism.getNextBits(hex"ffff001d", 1231006505, 1233061996)), bytes32(bytes4(hex"ffff001d")));
+        // negative timespan clamps to 2 weeks / 4
+        assertEq(bytes32(prism.getNextBits(hex"ab980b17", 1000, 0)), bytes32(bytes4(hex"2ae60217")));
+        // timespan clamps to 2 weeks * 4
+        assertEq(bytes32(prism.getNextBits(hex"ab980b17", 0, 100000000)), bytes32(bytes4(hex"ac622e17")));
+    }
+
+    function testRetargetWrongBits() public {
+        // period 355 claimed to start a day later: real header 717696 no longer matches.
+        BtcPrism prism = new BtcPrism(
+            717694,
+            0x0000000000000000000b3dd6d6062aa8b7eb99d033fe29e507e0a0d81b5eaeed,
+            1641627092,
+            hex"ab980b17",
+            1640422999 + 86400,
+            false
+        );
+        prism.submit(717695, headerGood);
+        vm.expectRevert(abi.encodeWithSelector(WrongDifficultyBits.selector));
+        prism.submit(717696, b717696);
     }
 }
