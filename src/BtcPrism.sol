@@ -51,20 +51,30 @@ contract BtcPrism is IBtcPrism {
     uint256 constant NUM_BLOCKS = 2000;
     bytes32[NUM_BLOCKS] public blockHashes;
 
-    /** @notice Difficulty targets in each retargeting period. */
-    mapping(uint256 => uint256) public periodToTarget;
+    struct Period {
+        bytes4 bits; // nBits shared by every block of the period, header (little-endian) byte order
+        uint32 startTime; // timestamp of the period's first block (height % 2016 == 0)
+        uint32 endTime; // timestamp of the period's last block (height % 2016 == 2015), 0 until stored
+    }
+    /** @notice Difficulty bits and boundary timestamps of each retargeting period. */
+    mapping(uint256 => Period) public periods;
+
+    uint256 constant POW_LIMIT = (1 << 224) - 1;
 
 
     /** @notice Tracks Bitcoin starting from a given block. The isTestnet
      *          argument is necessary because the Bitcoin testnet does not
      *          respect the difficulty rules, so we disable block difficulty
      *          checks in order to track it.
+     *  @param _bits nBits of the anchor block's period, header byte order.
+     *  @param _periodStartTime timestamp of the first block of the anchor block's period.
      */
     constructor(
         uint120 _blockHeight,
         bytes32 _blockHash,
         uint120 _blockTime,
-        uint256 _expectedTarget,
+        bytes4 _bits,
+        uint32 _periodStartTime,
         bool _isTestnet
     ) {
         require(_blockHeight > 2016); // Is needed for unchecked math.
@@ -72,7 +82,11 @@ contract BtcPrism is IBtcPrism {
         blockHashes[_blockHeight % NUM_BLOCKS] = _blockHash;
         latestBlockHeight = _blockHeight;
         latestBlockTime = _blockTime;
-        periodToTarget[_blockHeight / 2016] = _expectedTarget;
+        periods[_blockHeight / 2016] = Period({
+            bits: _bits,
+            startTime: _periodStartTime,
+            endTime: _blockHeight % 2016 == 2015 ? uint32(_blockTime) : 0
+        });
         isTestnet = _isTestnet;
     }
 
@@ -182,9 +196,7 @@ contract BtcPrism is IBtcPrism {
 
         // record the new tip height and timestamp
         latestBlockHeight = uint120(newHeight);
-        uint256 ixT = blockHeaders.length - 12; // blockHeaders.length is at least 80.
-        uint32 time = uint32(bytes4(blockHeaders[ixT:ixT + 4]));  // max ixT = type(uint256).max - 12 => max ixT +4 => type(uint256).max - 12 + 4
-        latestBlockTime = Endian.reverse32(time);
+        latestBlockTime = _headerTime(blockHeaders[blockHeaders.length - 80:]); // blockHeaders.length is at least 80.
 
         // finally, log the new tip
         bytes32 newTip = getBlockHash(newHeight);
@@ -203,7 +215,7 @@ contract BtcPrism is IBtcPrism {
     {
         unchecked {
 
-        uint256 target = periodToTarget[period];
+        uint256 target = getTarget(periods[period].bits);
         // unchecked: The maximum target is around 2^224 < 2**256
         // ~target / (target + 1) is type(uint256).max if target == 0
         // but target > 1 => ~target / (target + 1) < type(uint256).max
@@ -248,31 +260,51 @@ contract BtcPrism is IBtcPrism {
         if (prevHash == bytes32(0)) revert NoParent();
 
         // verify proof-of-work
-        bytes32 bits = bytes32(blockHeader[72:76]);
+        bytes4 bits = bytes4(blockHeader[72:76]);
         uint256 target = getTarget(bits);
         if (blockHashNum >= target) revert HashAboveTarget();
 
-        // support once-every-2016-blocks retargeting
         uint256 period = blockHeight / 2016;
-        if (blockHeight % 2016 == 0) {
-            // Bitcoin enforces a minimum difficulty of 25% of the previous
-            // difficulty. Doing the full calculation here does not necessarily
-            // add any security. We keep the heaviest chain, not the longest.
-            uint256 lastTarget = periodToTarget[period - 1]; // blockHeight > 2016 => blockHeight / 2016 > 1 => fine.
-            // ignore difficulty update rules on testnet.
-            // Bitcoin testnet has some clown hacks regarding difficulty, see
+        uint256 offset = blockHeight % 2016;
+        if (offset == 0) {
+            // Bitcoin testnet has min-difficulty exceptions; its difficulty stays unchecked.
             // https://blog.lopp.net/the-block-storms-of-bitcoins-testnet/
             if (!isTestnet) {
-                if (target >> 2 >= lastTarget) revert DifficultyRetargetLT25();
-                if (target << 2 <= lastTarget) revert DifficultyRetargetLT25();
+                Period memory last = periods[period - 1]; // blockHeight > 2016 => period >= 1
+                if (bits != getNextBits(last.bits, last.startTime, last.endTime)) revert WrongDifficultyBits();
             }
-            periodToTarget[period] = target;
-        } else if (!isTestnet) {
-            // verify difficulty
-            if (target != periodToTarget[period]) revert WrongDifficultyBits();
+            periods[period] = Period({bits: bits, startTime: _headerTime(blockHeader), endTime: 0});
+        } else {
+            if (!isTestnet && bits != periods[period].bits) revert WrongDifficultyBits();
+            if (offset == 2015) periods[period].endTime = _headerTime(blockHeader);
         }
 
         }
+    }
+
+    function _headerTime(bytes calldata header) private pure returns (uint32) {
+        return Endian.reverse32(uint32(bytes4(header[68:72])));
+    }
+
+    /** @notice Bitcoin's CalculateNextWorkRequired: nBits (header byte order) of the period
+     *          following one with the given nBits and first/last block timestamps.
+     */
+    function getNextBits(bytes4 lastBits, uint256 startTime, uint256 endTime) public pure returns (bytes4) {
+        uint256 timespan = endTime > startTime ? endTime - startTime : 0; // Core uses int64; negative clamps to the minimum
+        if (timespan < 302400) timespan = 302400; // 2 weeks / 4
+        if (timespan > 4838400) timespan = 4838400; // 2 weeks * 4
+        uint256 target = getTarget(lastBits) * timespan / 1209600;
+        if (target > POW_LIMIT) target = POW_LIMIT;
+
+        // arith_uint256::GetCompact
+        uint256 size = 0;
+        for (uint256 t = target; t != 0; t >>= 8) ++size;
+        uint256 mantissa = size <= 3 ? target << (8 * (3 - size)) : target >> (8 * (size - 3));
+        if (mantissa & 0x00800000 != 0) {
+            mantissa >>= 8;
+            ++size;
+        }
+        return bytes4(Endian.reverse32(uint32(mantissa | (size << 24))));
     }
 
     function getTarget(bytes32 bits) public pure returns (uint256) {

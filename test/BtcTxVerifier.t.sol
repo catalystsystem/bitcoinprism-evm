@@ -28,7 +28,8 @@ contract BtcTxVerifierTest is DSTest {
             736000, // start at block #736000
             0x00000000000000000002d52d9816a419b45f1f0efe9a9df4f7b64161e508323d,
             0,
-            0x0,
+            bytes4(0),
+            0,
             false
         );
         assertEq(prism.getLatestBlockHeight(), 736000);
@@ -103,7 +104,8 @@ contract BtcTxVerifierTest is DSTest {
             831400, // start at block #736000
             0x00000000000000000002f2b8b266d44886b53142a93464b7042ca8b014d1fcfc,
             0,
-            0x0,
+            bytes4(0),
+            0,
             false
         );
         assertEq(prism.getLatestBlockHeight(), 831400);
